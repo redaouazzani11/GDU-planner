@@ -1,11 +1,11 @@
 # app.py
 import streamlit as st
 import pandas as pd
+import os
 
 # =============================================================================
 # PART 1: CORE PYTHON CLASSES (UNCHANGED)
 # =============================================================================
-# Your PlantingPlanner and HybridPlanner classes are perfect. No changes needed here.
 class PlantingPlanner:
     """Calculates and displays a split planting recommendation for one hybrid pair."""
     def __init__(self, gdu_male_p50d: int, gdu_female_s50d: int, split_gdu_interval: int = 40):
@@ -19,18 +19,27 @@ class PlantingPlanner:
         male_central_delay = -self.gdu_difference
         male_1_delay = male_central_delay - self.split_gdu_interval
         male_2_delay = male_central_delay + self.split_gdu_interval
-        plan = {'Female': {'gdu_delay': 0, 'timing_notes': 'Plant on Day 0'},'Male 1': {'gdu_delay': male_1_delay, 'timing_notes': ''},'Male 2': {'gdu_delay': male_2_delay, 'timing_notes': ''}}
+        plan = {
+            'Female': {'gdu_delay': 0, 'timing_notes': 'Plant on Day 0'},
+            'Male 1': {'gdu_delay': male_1_delay, 'timing_notes': ''},
+            'Male 2': {'gdu_delay': male_2_delay, 'timing_notes': ''}
+        }
         for male_key in ['Male 1', 'Male 2']:
             delay = plan[male_key]['gdu_delay']
-            if delay > 0: plan[male_key]['timing_notes'] = f"Plant {delay} GDU AFTER the female"
-            elif delay < 0: plan[male_key]['timing_notes'] = f"Plant {abs(delay)} GDU BEFORE the female"
-            else: plan[male_key]['timing_notes'] = "Plant at the SAME TIME as the female"
+            if delay > 0:
+                plan[male_key]['timing_notes'] = f"Plant {delay} GDU AFTER the female"
+            elif delay < 0:
+                plan[male_key]['timing_notes'] = f"Plant {abs(delay)} GDU BEFORE the female"
+            else:
+                plan[male_key]['timing_notes'] = "Plant at the SAME TIME as the female"
         return plan
+
 
 class HybridPlanner:
     """Manages pedigree data and provides an interface to generate plans."""
     def __init__(self, pedigree_df: pd.DataFrame):
         self.df = pedigree_df.set_index('pedigree')
+
 
 # =============================================================================
 # PART 2: DATA LOADING AND HELPER FUNCTIONS
@@ -40,21 +49,30 @@ class HybridPlanner:
 def load_data(file_path):
     """Loads and validates the master pedigree data."""
     try:
+        # Debug: Show the path being used
+        st.sidebar.text(f"Loading from: {file_path}")
+        st.sidebar.text(f"File exists: {os.path.exists(file_path)}")
+        
         df = pd.read_csv(file_path)
         required_cols = {'pedigree', 'P50_GDUs', 'S50_GDUs'}
         if not required_cols.issubset(df.columns):
-            st.error(f"Master Data Error: CSV must have columns {required_cols}.")
+            st.error(f"Master Data Error: CSV must have columns {required_cols}. Found: {df.columns.tolist()}")
             return None
         df['pedigree'] = df['pedigree'].str.strip()
         return df
     except FileNotFoundError:
         st.error(f"Fatal Error: Master data file not found at '{file_path}'.")
         return None
+    except Exception as e:
+        st.error(f"Error loading data: {type(e).__name__}: {e}")
+        return None
+
 
 @st.cache_data
 def convert_df_to_csv(df):
     """Helper function to convert a DataFrame to a CSV string for downloading."""
     return df.to_csv(index=False).encode('utf-8')
+
 
 # =============================================================================
 # PART 3: THE STREAMLIT USER INTERFACE FOR BULK UPLOAD
@@ -66,13 +84,18 @@ st.markdown("Upload a list of hybrid combinations to get planting recommendation
 st.divider()
 
 # --- Load Master Pedigree Data ---
-# IMPORTANT: Use a relative path if deploying, or keep the full path for local use.
-data_file_path = "GDUs_corn_data.csv"
+# FIX: Use proper path resolution for cloud deployment
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+data_file_path = os.path.join(SCRIPT_DIR, "GDUs_corn_data.csv")
+
 pedigree_data_df = load_data(data_file_path)
 
 # The app proceeds only if the master data is available
 if pedigree_data_df is not None:
     tool = HybridPlanner(pedigree_data_df)
+    
+    # Show success message
+    st.success(f"✅ Loaded {len(pedigree_data_df)} pedigrees from master data.")
 
     # --- Section 1: Instructions and Template Download ---
     st.subheader("1. Prepare Your Upload File")
@@ -115,8 +138,8 @@ if pedigree_data_df is not None:
 
                 # --- The Core Processing Loop ---
                 for index, row in uploaded_df.iterrows():
-                    female_name = row['Female'].strip()
-                    male_name = row['Male'].strip()
+                    female_name = str(row['Female']).strip()
+                    male_name = str(row['Male']).strip()
                     
                     try:
                         # Get GDU values from the master data
@@ -124,7 +147,10 @@ if pedigree_data_df is not None:
                         gdu_male = tool.df.loc[male_name, 'P50_GDUs']
 
                         # Generate the plan for this row
-                        plan = PlantingPlanner(gdu_male_p50d=int(gdu_male), gdu_female_s50d=int(gdu_female))
+                        plan = PlantingPlanner(
+                            gdu_male_p50d=int(gdu_male),
+                            gdu_female_s50d=int(gdu_female)
+                        )
                         
                         # Append the results to our list
                         results_list.append({
@@ -137,8 +163,9 @@ if pedigree_data_df is not None:
                             'Male 2 Planting': plan.recommendation['Male 2']['timing_notes']
                         })
                     except KeyError as e:
-                        # Handle cases where a pedigree in the upload is not in the master data
-                        warnings_list.append(f"Skipped row {index + 1}: Pedigree '{e.args[0]}' not found in the master data.")
+                        warnings_list.append(
+                            f"Skipped row {index + 1}: Pedigree '{e.args[0]}' not found in the master data."
+                        )
                 
                 # --- Display Warnings and Results ---
                 st.divider()
@@ -151,7 +178,7 @@ if pedigree_data_df is not None:
 
                 if results_list:
                     summary_df = pd.DataFrame(results_list)
-                    st.dataframe(summary_df) # Use st.dataframe for scrollable tables
+                    st.dataframe(summary_df)
 
                     # --- Add a download button for the results ---
                     results_csv = convert_df_to_csv(summary_df)
@@ -161,8 +188,12 @@ if pedigree_data_df is not None:
                         file_name="planting_plan_results.csv",
                         mime="text/csv",
                     )
+                else:
+                    st.info("No valid results were generated.")
+                    
         except Exception as e:
-            st.error(f"An error occurred while processing the file: {e}")
+            st.error(f"An error occurred while processing the file: {type(e).__name__}: {e}")
 
 else:
     st.error("Application cannot start because the master pedigree data failed to load.")
+    st.info("Please check that 'GDUs_corn_data.csv' exists in the repository and has the correct format.")
